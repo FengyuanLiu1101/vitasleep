@@ -1,73 +1,55 @@
-# React + TypeScript + Vite
+# VitaSleep Agent
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+> 基于身体电量感知的智能日程优化助手
 
-Currently, two official plugins are available:
+## 项目简介
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+VitaSleep Agent 是一款 AI 驱动的健康日程管理工具。
+通过实时监测用户的"身体电量"，自动识别日程中的疲劳风险，
+并生成个性化的日程重排建议，帮助用户在高效工作的同时保护长期健康。
 
-## React Compiler
+## 核心功能
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+- 日程智能分析：接入飞书日历，由智谱 AI 识别连续工作风险
+- 身体电量模型：基于睡眠质量与工作时长实时计算精力状态
+- 日程重排建议：自动插入休息块，固定事件不受影响
+- 双向同步：支持飞书日历读取与写入，修改可一键同步
+- 演示控制台：支持一键触发三种核心场景，适合产品演示
 
-## Expanding the ESLint configuration
+## 技术栈
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+- 前端：React + TypeScript + Tailwind CSS v4 + Recharts
+- 状态管理：Zustand
+- AI 能力：智谱 GLM-4-flash
+- 日历集成：飞书日历 API（OAuth 2.0）
+- 构建工具：Vite
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+## 本地运行
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+在项目根目录执行：
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+npm install
+npm run dev
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+访问 http://localhost:5173 查看效果。
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+## 环境变量
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+在项目根目录创建 .env.local 文件：
+
+VITE_FEISHU_APP_ID=你的飞书应用AppID
+VITE_FEISHU_APP_SECRET=你的飞书应用Secret
+VITE_ZHIPU_API_KEY=你的智谱APIKey
+
+## 演示场景
+
+| 场景 | 触发条件 | Agent 行为 |
+|------|----------|------------|
+| 场景1：基础闭环 | 电量降至 30% 以下 | 插入15分钟休息块 |
+| 场景2：高疲劳干预 | 电量降至 15% 以下 | 拆分长工作块并插入休息 |
+| 场景3：免打扰适配 | 会议中电量触发阈值 | 延后至会议结束后推送建议 |
+
+## 项目状态
+
+当前为 MVP 演示版本，核心功能基于规则引擎实现。
+后续规划：真实生物特征模型接入 · React Native 移动端 · iOS EventKit 日历集成
