@@ -1,12 +1,13 @@
 import { useEffect, useState } from 'react'
 import { Trash2 } from 'lucide-react'
-import type { Event, EventType } from '../data/mockData'
+import type { Event, ScheduleKind } from '../data/mockData'
+import { isoToHHmm } from '../utils/scheduleTime'
 
 export interface EventDraft {
   title: string
   startTime: string
   endTime: string
-  type: EventType
+  type: ScheduleKind
 }
 
 interface Props {
@@ -34,15 +35,15 @@ export default function EventEditForm({
     initial
       ? {
           title: initial.title,
-          startTime: initial.startTime,
-          endTime: initial.endTime,
+          startTime: isoToHHmm(initial.startTime),
+          endTime: isoToHHmm(initial.endTime),
           type: initial.type,
         }
       : defaultDraft ?? {
           title: '',
           startTime: '12:00',
           endTime: '13:00',
-          type: 'flexible',
+          type: 'work',
         },
   )
   const [error, setError] = useState<string | null>(null)
@@ -111,12 +112,14 @@ export default function EventEditForm({
           <select
             value={draft.type}
             onChange={(e) =>
-              setDraft((d) => ({ ...d, type: e.target.value as EventType }))
+              setDraft((d) => ({ ...d, type: e.target.value as ScheduleKind }))
             }
             className="w-full bg-bg-1 rounded-lg px-3 h-9 text-[13px] text-text-1 outline-none focus:ring-1 focus:ring-cyan-1"
           >
-            <option value="fixed">固定事件</option>
-            <option value="flexible">弹性事件</option>
+            <option value="work">弹性工作</option>
+            <option value="meeting">会议（固定）</option>
+            <option value="fixed">固定事项</option>
+            <option value="rest">休息</option>
           </select>
         </div>
 

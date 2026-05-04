@@ -3,6 +3,10 @@ import { persist, createJSONStorage } from 'zustand/middleware'
 import type { Event, Issue } from '../data/mockData'
 import { initialSchedule } from '../data/mockData'
 import type { ScenarioId } from '../data/mockAnalysis'
+import type { ScheduleSuggestion } from '../services/scheduleAdvisor'
+import { assertEnergySynced, type EnergyPoint } from '../utils/energySync'
+import { hhmmToIso } from '../utils/scheduleTime'
+import { setFeishuToken } from '../lib/feishuClient'
 
 export type StressLevel = 'low' | 'mid' | 'high'
 export type LogLevel = 'INFO' | 'WARN' | 'DONE' | 'ERROR'
@@ -18,67 +22,122 @@ export interface LogEntry {
 
 /** Snapshot recorded just before a Feishu push, used to power "undo last sync". */
 export interface SyncSnapshot {
-  /** Local schedule as it was just *before* push completed. Restoring this
-   *  rewinds local edits that the user pushed. */
   eventsBefore: Event[]
-  /** Original (= remote baseline) snapshot before the push. */
   originalBefore: Event[]
-  /** Feishu event_ids that were created during the push and should be
-   *  deleted on undo. */
   createdFeishuIds: string[]
-  /** Local ids of events for which a feishuEventId was assigned during push.
-   *  On undo we strip the feishuEventId so the local copy goes back to
-   *  un-synced state. */
   createdLocalIds: string[]
-  /** Human-readable timestamp ("HH:MM"). */
   syncedAt: string
-  /** True when the source push was performed in demo mode (no remote calls
-   *  to undo, just restore local state). */
   demo: boolean
 }
 
+function seedEnergyHistory(level: number): EnergyPoint[] {
+  const rounded = Math.max(0, Math.min(100, Math.round(level)))
+  const now = Date.now()
+  const hourMs = 3600000
+  const pts: EnergyPoint[] = []
+  for (let i = 0; i < 7; i++) {
+    pts.push({
+      time: new Date(now - (7 - i) * hourMs).toISOString(),
+      value: Math.max(0, Math.min(100, rounded + (i - 3) * 6)),
+    })
+  }
+  return assertEnergySynced(pts, rounded)
+}
+
+/** Migrate persisted calendar rows from legacy HH:mm + flexible/fixed. */
+export function migrateLegacyEvent(raw: Record<string, unknown>): Event {
+  const id = String(raw.id ?? '')
+  const title = String(raw.title ?? '')
+  let startTime = String(raw.startTime ?? '')
+  let endTime = String(raw.endTime ?? '')
+  if (/^\d{2}:\d{2}$/.test(startTime)) startTime = hhmmToIso(startTime)
+  if (/^\d{2}:\d{2}$/.test(endTime)) endTime = hhmmToIso(endTime)
+
+  const legacyType = raw.type
+  let type: Event['type']
+  let isFixed: boolean
+  if (legacyType === 'flexible') {
+    type = 'work'
+    isFixed = false
+  } else if (legacyType === 'fixed') {
+    type = /会议|评审|同步|周会|对齐/.test(title) ? 'meeting' : 'fixed'
+    isFixed = true
+  } else if (
+    legacyType === 'work' ||
+    legacyType === 'meeting' ||
+    legacyType === 'rest' ||
+    legacyType === 'fixed'
+  ) {
+    type = legacyType as Event['type']
+    isFixed =
+      typeof raw.isFixed === 'boolean'
+        ? raw.isFixed
+        : type === 'fixed' || type === 'meeting'
+  } else {
+    type = 'work'
+    isFixed = false
+  }
+
+  const source =
+    raw.source === 'feishu' ||
+    raw.source === 'manual' ||
+    raw.source === 'agent_suggested' ||
+    raw.source === 'agent_accepted' ||
+    raw.source === 'apple'
+      ? (raw.source as Event['source'])
+      : 'manual'
+
+  const ev: Event = {
+    id,
+    title,
+    startTime,
+    endTime,
+    type,
+    isFixed,
+    source,
+  }
+  if (typeof raw.feishuEventId === 'string') ev.feishuEventId = raw.feishuEventId
+  if (typeof raw.acceptedAt === 'string') ev.acceptedAt = raw.acceptedAt
+  return ev
+}
+
 interface AppState {
-  // Physiology
-  energyLevel: number
+  currentEnergyLevel: number
+  energyHistory: EnergyPoint[]
   heartRate: number
   stressLevel: StressLevel
   activeScenario: ScenarioId
 
-  // Logs
   logs: LogEntry[]
 
-  // Schedule
   scheduleEvents: Event[]
-  /** Last snapshot fetched from Feishu — used to diff before pushing back. */
   originalEvents: Event[]
   analysisResults: Issue[]
-  /** Persisted: ids whose suggestion the user accepted across sessions. */
+  scheduleSuggestions: ScheduleSuggestion[]
   acceptedIds: string[]
-  /** IDs ignored within the *current* analysis cycle. Cleared on reanalyze. */
   ignoredEventIds: string[]
   scheduleConfirmed: boolean
   isAnalyzing: boolean
   analysisError: string | null
+  errorMessage: string | null
   lastSyncTime: string
 
-  // Sync history
   lastSyncSnapshot: SyncSnapshot | null
 
-  // User / connections
   userName: string
   userEmail: string
   feishuConnected: boolean
+  feishuAccessToken: string | null
+  lastSyncedAt: string | null
 
-  // Settings
   energyThreshold: number
   notificationsEnabled: boolean
   demoMode: boolean
 
-  // UI
   userDrawerOpen: boolean
 
-  // Actions
-  setEnergyLevel: (v: number) => void
+  setCurrentEnergyLevel: (v: number) => void
+  appendEnergyHistory: (point: EnergyPoint) => void
   setHeartRate: (v: number) => void
   setStressLevel: (v: StressLevel) => void
   setActiveScenario: (v: ScenarioId) => void
@@ -87,27 +146,24 @@ interface AppState {
   appendLogs: (entries: Array<Omit<LogEntry, 'id' | 'time'> & { time?: string }>) => void
   resetLogs: (entries?: LogEntry[]) => void
 
-  // Schedule actions
   setScheduleEvents: (events: Event[]) => void
   setOriginalEvents: (events: Event[]) => void
   addEvent: (event: Event) => void
+  applyAgentAcceptedEvent: (event: Event) => void
   updateEvent: (id: string, patch: Partial<Event>) => void
   deleteEvent: (id: string) => void
 
   setAnalysisResults: (issues: Issue[]) => void
+  setScheduleSuggestions: (rows: ScheduleSuggestion[]) => void
   acceptIssue: (eventId: string) => void
   ignoreIssue: (eventId: string) => void
   resetIssueDecisions: () => void
   setIsAnalyzing: (v: boolean) => void
   setAnalysisError: (msg: string | null) => void
+  setErrorMessage: (msg: string | null) => void
   setScheduleConfirmed: (v: boolean) => void
   setLastSyncTime: (v: string) => void
 
-  /**
-   * Wipe every piece of derived schedule state and load a new event list.
-   * Used by the scenario buttons on the Control page so a previous
-   * scenario's analysis/issues/decisions never leak into the next one.
-   */
   resetScheduleForScenario: (events: Event[]) => void
 
   setLastSyncSnapshot: (s: SyncSnapshot | null) => void
@@ -115,6 +171,9 @@ interface AppState {
   setUserName: (v: string) => void
   setUserEmail: (v: string) => void
   setFeishuConnected: (v: boolean) => void
+  setFeishuAccessToken: (token: string) => void
+  disconnectFeishu: () => void
+  setLastSyncedAt: (iso: string | null) => void
 
   setEnergyThreshold: (v: number) => void
   setNotificationsEnabled: (v: boolean) => void
@@ -129,7 +188,7 @@ const nowTime = () => {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`
 }
 
-const nowHHmm = () => {
+export const nowHHmm = () => {
   const d = new Date()
   const pad = (n: number) => n.toString().padStart(2, '0')
   return `${pad(d.getHours())}:${pad(d.getMinutes())}`
@@ -156,10 +215,16 @@ const initialLogs: LogEntry[] = [
 const sortByStart = (a: Event, b: Event) =>
   a.startTime.localeCompare(b.startTime)
 
+const initialToken =
+  typeof localStorage !== 'undefined'
+    ? localStorage.getItem('feishu_token')
+    : null
+
 export const useAppStore = create<AppState>()(
   persist(
     (set) => ({
-      energyLevel: 15,
+      currentEnergyLevel: 15,
+      energyHistory: seedEnergyHistory(15),
       heartRate: 72,
       stressLevel: 'low',
       activeScenario: null,
@@ -168,20 +233,22 @@ export const useAppStore = create<AppState>()(
       scheduleEvents: initialSchedule,
       originalEvents: [],
       analysisResults: [],
+      scheduleSuggestions: [],
       acceptedIds: [],
       ignoredEventIds: [],
       scheduleConfirmed: false,
       isAnalyzing: false,
       analysisError: null,
+      errorMessage: null,
       lastSyncTime: '',
 
       lastSyncSnapshot: null,
 
       userName: '用户',
       userEmail: '',
-      feishuConnected:
-        typeof localStorage !== 'undefined' &&
-        !!localStorage.getItem('feishu_token'),
+      feishuConnected: !!initialToken,
+      feishuAccessToken: initialToken,
+      lastSyncedAt: null,
 
       energyThreshold: 30,
       notificationsEnabled: true,
@@ -189,8 +256,27 @@ export const useAppStore = create<AppState>()(
 
       userDrawerOpen: false,
 
-      setEnergyLevel: (v) =>
-        set({ energyLevel: Math.max(0, Math.min(100, Math.round(v))) }),
+      setCurrentEnergyLevel: (v) => {
+        const rounded = Math.max(0, Math.min(100, Math.round(v)))
+        const pt: EnergyPoint = {
+          time: new Date().toISOString(),
+          value: rounded,
+        }
+        set((s) => ({
+          currentEnergyLevel: rounded,
+          energyHistory: assertEnergySynced([...s.energyHistory, pt], rounded),
+        }))
+      },
+
+      appendEnergyHistory: (point) => {
+        const rounded = Math.max(0, Math.min(100, Math.round(point.value)))
+        const pt = { ...point, value: rounded }
+        set((s) => ({
+          energyHistory: assertEnergySynced([...s.energyHistory, pt], rounded),
+          currentEnergyLevel: rounded,
+        }))
+      },
+
       setHeartRate: (v) =>
         set({ heartRate: Math.max(40, Math.min(120, Math.round(v))) }),
       setStressLevel: (v) => set({ stressLevel: v }),
@@ -232,6 +318,7 @@ export const useAppStore = create<AppState>()(
           acceptedIds: [],
           ignoredEventIds: [],
           scheduleConfirmed: false,
+          scheduleSuggestions: [],
         }),
 
       setOriginalEvents: (events) => set({ originalEvents: [...events] }),
@@ -241,6 +328,13 @@ export const useAppStore = create<AppState>()(
           scheduleEvents: [...s.scheduleEvents, event].sort(sortByStart),
           acceptedIds: [],
           ignoredEventIds: [],
+          scheduleConfirmed: false,
+          scheduleSuggestions: [],
+        })),
+
+      applyAgentAcceptedEvent: (event) =>
+        set((s) => ({
+          scheduleEvents: [...s.scheduleEvents, event].sort(sortByStart),
           scheduleConfirmed: false,
         })),
 
@@ -252,6 +346,7 @@ export const useAppStore = create<AppState>()(
           acceptedIds: s.acceptedIds.filter((aid) => aid !== id),
           ignoredEventIds: s.ignoredEventIds.filter((iid) => iid !== id),
           scheduleConfirmed: false,
+          scheduleSuggestions: [],
         })),
 
       deleteEvent: (id) =>
@@ -260,15 +355,16 @@ export const useAppStore = create<AppState>()(
           acceptedIds: s.acceptedIds.filter((aid) => aid !== id),
           ignoredEventIds: s.ignoredEventIds.filter((iid) => iid !== id),
           scheduleConfirmed: false,
+          scheduleSuggestions: [],
         })),
 
       setAnalysisResults: (issues) =>
         set({
           analysisResults: issues,
-          acceptedIds: [],
-          ignoredEventIds: [],
           scheduleConfirmed: false,
         }),
+
+      setScheduleSuggestions: (rows) => set({ scheduleSuggestions: rows }),
 
       acceptIssue: (eventId) =>
         set((s) => ({
@@ -289,6 +385,7 @@ export const useAppStore = create<AppState>()(
       resetIssueDecisions: () => set({ acceptedIds: [], ignoredEventIds: [] }),
       setIsAnalyzing: (v) => set({ isAnalyzing: v }),
       setAnalysisError: (msg) => set({ analysisError: msg }),
+      setErrorMessage: (msg) => set({ errorMessage: msg }),
       setScheduleConfirmed: (v) => set({ scheduleConfirmed: v }),
 
       setLastSyncTime: (v) => set({ lastSyncTime: v }),
@@ -298,6 +395,7 @@ export const useAppStore = create<AppState>()(
           scheduleEvents: [...events].sort(sortByStart),
           originalEvents: [],
           analysisResults: [],
+          scheduleSuggestions: [],
           acceptedIds: [],
           ignoredEventIds: [],
           scheduleConfirmed: false,
@@ -309,7 +407,27 @@ export const useAppStore = create<AppState>()(
 
       setUserName: (v) => set({ userName: v }),
       setUserEmail: (v) => set({ userEmail: v }),
+
       setFeishuConnected: (v) => set({ feishuConnected: v }),
+
+      setFeishuAccessToken: (token) => {
+        setFeishuToken(token)
+        set({
+          feishuAccessToken: token,
+          feishuConnected: true,
+        })
+      },
+
+      disconnectFeishu: () => {
+        setFeishuToken(null)
+        set({
+          feishuAccessToken: null,
+          feishuConnected: false,
+          userEmail: '',
+        })
+      },
+
+      setLastSyncedAt: (iso) => set({ lastSyncedAt: iso }),
 
       setEnergyThreshold: (v) => set({ energyThreshold: v }),
       setNotificationsEnabled: (v) => set({ notificationsEnabled: v }),
@@ -319,12 +437,11 @@ export const useAppStore = create<AppState>()(
     }),
     {
       name: 'vita_app_state',
-      version: 2,
+      version: 3,
       storage: createJSONStorage(() => localStorage),
-      // Only fields the user expects to survive reloads. Transient analysis
-      // state, logs, and dialog flags are intentionally excluded.
       partialize: (s) => ({
-        energyLevel: s.energyLevel,
+        currentEnergyLevel: s.currentEnergyLevel,
+        energyHistory: s.energyHistory,
         activeScenario: s.activeScenario,
         acceptedIds: s.acceptedIds,
         lastSyncTime: s.lastSyncTime,
@@ -334,24 +451,39 @@ export const useAppStore = create<AppState>()(
         energyThreshold: s.energyThreshold,
         notificationsEnabled: s.notificationsEnabled,
         demoMode: s.demoMode,
+        scheduleEvents: s.scheduleEvents,
       }),
       migrate: (persisted, version) => {
-        // v1 → v2: legacy `vita_settings` key already migrated by hand below.
-        if (version < 2 && persisted && typeof persisted === 'object') {
-          const p = persisted as Record<string, unknown>
-          return {
-            ...p,
-            lastSyncSnapshot: null,
+        let p = persisted as Record<string, unknown>
+        if (version < 3 && p && typeof p === 'object') {
+          const el = p.energyLevel
+          if (typeof el === 'number' && p.currentEnergyLevel === undefined) {
+            p = { ...p, currentEnergyLevel: el }
+          }
+          const se = p.scheduleEvents
+          if (Array.isArray(se)) {
+            p = {
+              ...p,
+              scheduleEvents: se.map((raw) =>
+                migrateLegacyEvent(raw as Record<string, unknown>),
+              ),
+            }
+          }
+          if (!Array.isArray(p.energyHistory)) {
+            const lvl =
+              typeof p.currentEnergyLevel === 'number' ? p.currentEnergyLevel : 15
+            p = { ...p, energyHistory: seedEnergyHistory(lvl) }
           }
         }
-        return persisted as AppState
+        if (version < 2 && p && typeof p === 'object') {
+          p = { ...p, lastSyncSnapshot: null }
+        }
+        return p as unknown as AppState
       },
     },
   ),
 )
 
-// One-time legacy migration from `vita_settings` (pre-persist middleware) into
-// the new persisted blob. Runs at import time, harmless on subsequent loads.
 if (typeof window !== 'undefined') {
   try {
     const legacy = localStorage.getItem('vita_settings')
@@ -371,8 +503,6 @@ if (typeof window !== 'undefined') {
       localStorage.removeItem('vita_settings')
     }
   } catch {
-    // ignore — legacy migration is best-effort
+    // ignore
   }
 }
-
-export { nowHHmm }

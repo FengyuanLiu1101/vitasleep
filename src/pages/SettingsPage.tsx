@@ -1,20 +1,29 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ChevronLeft, Trash2 } from 'lucide-react'
+import { ChevronLeft, Link2, LogOut, Trash2 } from 'lucide-react'
 import Card from '../components/Card'
 import Toggle from '../components/Toggle'
 import SliderControl from '../components/SliderControl'
 import Toast from '../components/Toast'
 import { useAppStore } from '../store/useAppStore'
+import { buildAuthorizeUrl } from '../lib/feishuClient'
+
+const isLocalhostHost = (hostname: string): boolean =>
+  hostname === 'localhost' ||
+  hostname === '127.0.0.1' ||
+  hostname === '0.0.0.0' ||
+  hostname.endsWith('.local')
 
 export default function SettingsPage() {
   const navigate = useNavigate()
   const energyThreshold = useAppStore((s) => s.energyThreshold)
   const notificationsEnabled = useAppStore((s) => s.notificationsEnabled)
   const demoMode = useAppStore((s) => s.demoMode)
+  const feishuConnected = useAppStore((s) => s.feishuConnected)
   const setEnergyThreshold = useAppStore((s) => s.setEnergyThreshold)
   const setNotificationsEnabled = useAppStore((s) => s.setNotificationsEnabled)
   const setDemoMode = useAppStore((s) => s.setDemoMode)
+  const disconnectFeishu = useAppStore((s) => s.disconnectFeishu)
   const appendLog = useAppStore((s) => s.appendLog)
 
   const [toast, setToast] = useState<{
@@ -45,6 +54,30 @@ export default function SettingsPage() {
     } catch {
       showToast('清除失败')
     }
+  }
+
+  const handleConnectFeishuCalendar = () => {
+    if (isLocalhostHost(window.location.hostname)) {
+      setDemoMode(true)
+      showToast('本地环境无法完成 OAuth，已切换演示模式', 'green')
+      appendLog({
+        level: 'WARN',
+        message: 'localhost 无法完成飞书 OAuth 回调；已切换演示模式',
+      })
+      return
+    }
+    const appId = import.meta.env.VITE_FEISHU_APP_ID
+    if (!appId || appId.startsWith('请填入')) {
+      showToast('请先在 .env 中配置 VITE_FEISHU_APP_ID')
+      return
+    }
+    window.location.href = buildAuthorizeUrl()
+  }
+
+  const handleDisconnectFeishuCalendar = () => {
+    disconnectFeishu()
+    appendLog({ level: 'INFO', message: '设置页：已断开飞书日历' })
+    showToast('已断开飞书连接', 'green')
   }
 
   return (
@@ -98,7 +131,47 @@ export default function SettingsPage() {
           </div>
         </Card>
 
-        <Card delay={100}>
+        <Card delay={75}>
+          <div className="flex items-center gap-2 mb-2">
+            <Link2 size={15} className="text-cyan-1" />
+            <span className="text-[15px] font-semibold text-text-1">
+              飞书日历
+            </span>
+          </div>
+          <p className="text-[12px] text-text-2 mb-3 leading-relaxed">
+            连接后可在采纳建议时将休息块写回飞书。未连接时继续使用本地演示数据。
+          </p>
+          <div className="flex flex-wrap items-center gap-3">
+            {feishuConnected ? (
+              <>
+                <span
+                  className="text-[13px] font-medium"
+                  style={{ color: '#6DBF6D' }}
+                >
+                  已连接
+                </span>
+                <button
+                  type="button"
+                  onClick={handleDisconnectFeishuCalendar}
+                  className="flex items-center gap-1.5 text-[13px] text-text-2 hover:text-text-1"
+                >
+                  <LogOut size={14} />
+                  断开连接
+                </button>
+              </>
+            ) : (
+              <button
+                type="button"
+                onClick={handleConnectFeishuCalendar}
+                className="h-10 px-4 rounded-xl bg-cyan-1 text-bg-0 font-semibold text-[13px]"
+              >
+                连接飞书日历
+              </button>
+            )}
+          </div>
+        </Card>
+
+        <Card delay={125}>
           <div className="flex items-center justify-between">
             <div className="pr-3">
               <div className="text-[14px] font-semibold text-text-1">演示模式</div>

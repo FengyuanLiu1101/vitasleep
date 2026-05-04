@@ -1,11 +1,9 @@
 import type { Event, Issue } from '../data/mockData'
 import { isRestEvent } from './zhipuClient'
+import { durationMinutesIso } from '../utils/scheduleTime'
 
-const durationMinutes = (e: Event): number => {
-  const [sh, sm] = e.startTime.split(':').map(Number)
-  const [eh, em] = e.endTime.split(':').map(Number)
-  return eh * 60 + em - (sh * 60 + sm)
-}
+const durationMinutes = (e: Event): number =>
+  durationMinutesIso(e.startTime, e.endTime)
 
 /**
  * Local fallback analyzer used when the Zhipu API isn't available.
@@ -39,7 +37,7 @@ export const analyzeLocally = (events: Event[], energyLevel: number): Issue[] =>
   else threshold = 0 // proactive — flag the longest
 
   const eligible = candidates
-    .filter((e) => e.type === 'flexible' && durationMinutes(e) > threshold)
+    .filter((e) => e.type === 'work' && durationMinutes(e) > threshold)
     .sort((a, b) => durationMinutes(b) - durationMinutes(a))
 
   const target =
@@ -69,5 +67,9 @@ export const isHealthySchedule = (
   energyLevel: number,
 ): boolean => {
   if (events.length === 0) return false
-  return energyLevel > 80 && events.some((e) => isRestEvent(e.title))
+  return (
+    energyLevel > 80 &&
+    (events.some((e) => e.type === 'rest') ||
+      events.some((e) => isRestEvent(e.title)))
+  )
 }

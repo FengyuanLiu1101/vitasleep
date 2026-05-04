@@ -1,19 +1,31 @@
-export type EventType = 'fixed' | 'flexible'
-export type EventSource = 'feishu' | 'apple' | 'manual'
+import { durationMinutesIso, hhmmToIso } from '../utils/scheduleTime'
 
+export type ScheduleKind = 'work' | 'meeting' | 'rest' | 'fixed'
+export type EventSource =
+  | 'feishu'
+  | 'manual'
+  | 'agent_suggested'
+  | 'agent_accepted'
+  | 'apple'
+
+/** Schedule row aligned with VitaSleep advisor model (single demo day). */
 export interface Event {
   id: string
   title: string
+  /** ISO 8601 local datetime string (`YYYY-MM-DDTHH:mm:ss`). */
   startTime: string
   endTime: string
-  type: EventType
+  type: ScheduleKind
+  isFixed: boolean
   source: EventSource
+  acceptedAt?: string
   feishuEventId?: string
 }
 
+export type ScheduleEvent = Event
+
 /**
- * Render-only break row produced when the user accepts an Issue with
- * insertBreakAfter. Not part of the persisted Event[] state.
+ * Render-only break row (legacy display helper — prefer persisted `rest` events).
  */
 export interface BreakRow {
   id: string
@@ -26,50 +38,132 @@ export interface BreakRow {
 
 export type DisplayItem = Event | BreakRow
 
+const iso = (hhStart: string, hhEnd: string) => ({
+  startTime: hhmmToIso(hhStart),
+  endTime: hhmmToIso(hhEnd),
+})
+
 export const initialSchedule: Event[] = [
   {
     id: 'e1',
     title: '产品同步',
-    startTime: '14:00',
-    endTime: '15:00',
-    type: 'fixed',
+    ...iso('14:00', '15:00'),
+    type: 'meeting',
+    isFixed: true,
     source: 'manual',
   },
   {
     id: 'e2',
     title: '核心架构评审',
-    startTime: '15:00',
-    endTime: '16:30',
-    type: 'fixed',
+    ...iso('15:00', '16:30'),
+    type: 'meeting',
+    isFixed: true,
     source: 'manual',
   },
   {
     id: 'e3',
     title: '文档整理',
-    startTime: '16:30',
-    endTime: '17:30',
-    type: 'flexible',
+    ...iso('16:30', '17:30'),
+    type: 'work',
+    isFixed: false,
     source: 'manual',
   },
 ]
 
 export const scenarioSchedules: Record<1 | 2 | 3, Event[]> = {
   1: [
-    { id: 's1-e1', title: '晨会', startTime: '09:00', endTime: '10:00', type: 'fixed', source: 'manual' },
-    { id: 's1-e2', title: '产品方案撰写', startTime: '10:00', endTime: '12:00', type: 'flexible', source: 'manual' },
-    { id: 's1-e3', title: '产品同步', startTime: '14:00', endTime: '15:00', type: 'fixed', source: 'manual' },
-    { id: 's1-e4', title: '文档整理', startTime: '15:00', endTime: '17:30', type: 'flexible', source: 'manual' },
+    {
+      id: 's1-e1',
+      title: '晨会',
+      ...iso('09:00', '10:00'),
+      type: 'meeting',
+      isFixed: true,
+      source: 'manual',
+    },
+    {
+      id: 's1-e2',
+      title: '产品方案撰写',
+      ...iso('10:00', '12:00'),
+      type: 'work',
+      isFixed: false,
+      source: 'manual',
+    },
+    {
+      id: 's1-e3',
+      title: '产品同步',
+      ...iso('14:00', '15:00'),
+      type: 'meeting',
+      isFixed: true,
+      source: 'manual',
+    },
+    {
+      id: 's1-e4',
+      title: '文档整理',
+      ...iso('15:00', '17:30'),
+      type: 'work',
+      isFixed: false,
+      source: 'manual',
+    },
   ],
   2: [
-    { id: 's2-e1', title: '核心功能开发', startTime: '09:00', endTime: '12:00', type: 'flexible', source: 'manual' },
-    { id: 's2-e2', title: '代码审查与优化', startTime: '13:00', endTime: '17:00', type: 'flexible', source: 'manual' },
-    { id: 's2-e3', title: '团队周会', startTime: '17:00', endTime: '18:00', type: 'fixed', source: 'manual' },
+    {
+      id: 's2-e1',
+      title: '核心功能开发',
+      ...iso('09:00', '12:00'),
+      type: 'work',
+      isFixed: false,
+      source: 'manual',
+    },
+    {
+      id: 's2-e2',
+      title: '代码审查与优化',
+      ...iso('13:00', '17:00'),
+      type: 'work',
+      isFixed: false,
+      source: 'manual',
+    },
+    {
+      id: 's2-e3',
+      title: '团队周会',
+      ...iso('17:00', '18:00'),
+      type: 'meeting',
+      isFixed: true,
+      source: 'manual',
+    },
   ],
   3: [
-    { id: 's3-e1', title: '跨部门对齐会议', startTime: '09:00', endTime: '11:00', type: 'fixed', source: 'manual' },
-    { id: 's3-e2', title: '核心架构评审', startTime: '11:00', endTime: '12:00', type: 'fixed', source: 'manual' },
-    { id: 's3-e3', title: '专项研究', startTime: '14:00', endTime: '16:00', type: 'flexible', source: 'manual' },
-    { id: 's3-e4', title: '邮件处理', startTime: '16:00', endTime: '17:00', type: 'flexible', source: 'manual' },
+    {
+      id: 's3-e1',
+      title: '跨部门对齐会议',
+      ...iso('09:00', '11:00'),
+      type: 'meeting',
+      isFixed: true,
+      source: 'manual',
+    },
+    {
+      id: 's3-e2',
+      title: '核心架构评审',
+      ...iso('11:00', '12:00'),
+      type: 'meeting',
+      isFixed: true,
+      source: 'manual',
+    },
+    {
+      id: 's3-e3',
+      title: '专项研究',
+      ...iso('14:00', '16:00'),
+      type: 'work',
+      isFixed: false,
+      source: 'manual',
+    },
+    {
+      id: 's3-e4',
+      title: '邮件处理',
+      ...iso('16:00', '17:00'),
+      type: 'work',
+      isFixed: false,
+      source: 'manual',
+    },
   ],
 }
 
@@ -79,19 +173,18 @@ export interface Issue {
   suggestion: string
   insertBreakAfter: boolean
   breakDuration: number
+  /** Maps UI row back to advisor suggestion for accept handling. */
+  suggestionId?: string
 }
 
-const durationMinutes = (e: Event): number => {
-  const [sh, sm] = e.startTime.split(':').map(Number)
-  const [eh, em] = e.endTime.split(':').map(Number)
-  return eh * 60 + em - (sh * 60 + sm)
-}
+const durationMinutes = (e: Event): number =>
+  durationMinutesIso(e.startTime, e.endTime)
 
 /** Generate a fallback issue list when the Zhipu API isn't available. */
 export const generateMockIssues = (events: Event[]): Issue[] => {
   if (events.length === 0) return []
   const flexLong = events
-    .filter((e) => e.type === 'flexible' && durationMinutes(e) >= 90)
+    .filter((e) => e.type === 'work' && durationMinutes(e) >= 90)
     .sort((a, b) => durationMinutes(b) - durationMinutes(a))[0]
   const target =
     flexLong ??
@@ -179,12 +272,12 @@ export const scenarios: Scenario[] = [
   {
     id: 2,
     title: '场景2：高疲劳干预',
-    subtitle: '将身体电量降至15%，触发街道策略',
+    subtitle: '将身体电量降至12%，触发干预策略',
   },
   {
     id: 3,
     title: '场景3：免打扰适配',
-    subtitle: '模拟外部干扰屏蔽，优先认知窗口',
+    subtitle: '模拟会议中低电量状态',
   },
 ]
 
@@ -203,14 +296,14 @@ export const scenarioLogs: Record<1 | 2 | 3, ScenarioLogTemplate[]> = {
   2: [
     { level: 'INFO', message: '触发场景2：高疲劳干预' },
     { level: 'INFO', message: '加载日程数据集 2（3 项事件，连续高强度）' },
-    { level: 'INFO', message: '检测到身体电量低于阈值（当前：15%）' },
-    { level: 'WARN', message: '识别到可移动弹性事件：代码审查与优化' },
+    { level: 'INFO', message: '已将身体电量设为 12%（演示）' },
+    { level: 'WARN', message: '识别到可移动弹性事件：建议由规则引擎动态生成' },
     { level: 'DONE', message: '建议已推送至日程优化页面' },
   ],
   3: [
     { level: 'INFO', message: '触发场景3：免打扰适配' },
     { level: 'INFO', message: '加载日程数据集 3（4 项事件，会议密集）' },
-    { level: 'WARN', message: '进入认知保护窗口，屏蔽非紧急消息' },
-    { level: 'DONE', message: '已为下一专注块预留 45 分钟静默期' },
+    { level: 'WARN', message: '进入认知保护窗口，模拟会议中低电量' },
+    { level: 'DONE', message: '建议已基于当前日程动态生成' },
   ],
 }

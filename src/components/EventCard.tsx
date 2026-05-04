@@ -18,13 +18,15 @@ interface Props {
 
 const TYPE_LABEL: Record<DisplayItem['type'], string> = {
   fixed: '固定事件',
-  flexible: '弹性事件',
-  rest: '建议新增',
+  work: '弹性工作',
+  meeting: '会议',
+  rest: '休息',
 }
 
 const TAG: Record<DisplayItem['type'], { bg: string; fg: string }> = {
   fixed: { bg: '#2D4A6B', fg: '#4A9EDB' },
-  flexible: { bg: '#2D3A2D', fg: '#6DBF6D' },
+  work: { bg: '#2D3A2D', fg: '#6DBF6D' },
+  meeting: { bg: '#2D4A6B', fg: '#4A9EDB' },
   rest: { bg: '#3D3A1A', fg: '#F5C842' },
 }
 

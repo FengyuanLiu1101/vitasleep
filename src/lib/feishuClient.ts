@@ -31,7 +31,7 @@ export const eventDedupeKey = (e: {
   title: string
   startTime: string
   endTime: string
-}): string => `${e.title}|${hhmmToTimestamp(e.startTime)}|${hhmmToTimestamp(e.endTime)}`
+}): string => `${e.title}|${isoOrHmToUnix(e.startTime)}|${isoOrHmToUnix(e.endTime)}`
 
 const loadPushedKeys = (): Set<string> => {
   try {
@@ -110,21 +110,25 @@ interface FeishuRawEvent {
   description?: string
 }
 
-const tsToHHmm = (ts: string): string => {
+const pad2 = (n: number) => n.toString().padStart(2, '0')
+
+const tsToScheduleIso = (ts: string): string => {
   const d = new Date(Number(ts) * 1000)
-  const pad = (n: number) => n.toString().padStart(2, '0')
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}`
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}T${pad2(d.getHours())}:${pad2(d.getMinutes())}:00`
 }
 
-const hhmmToTimestamp = (hhmm: string): number => {
-  const [h, m] = hhmm.split(':').map(Number)
+/** Seconds since Unix epoch from ISO datetime or legacy HH:mm (today). */
+const isoOrHmToUnix = (s: string): number => {
+  const parsed = Date.parse(s)
+  if (!Number.isNaN(parsed)) return Math.floor(parsed / 1000)
+  const [h, m] = s.split(':').map(Number)
   const d = new Date()
   d.setHours(h, m, 0, 0)
   return Math.floor(d.getTime() / 1000)
 }
 
-const inferType = (raw: FeishuRawEvent): 'fixed' | 'flexible' =>
-  /会议|评审|同步|周会|对齐/.test(raw.summary ?? '') ? 'fixed' : 'flexible'
+const inferKind = (raw: FeishuRawEvent): import('../data/mockData').Event['type'] =>
+  /会议|评审|同步|周会|对齐/.test(raw.summary ?? '') ? 'meeting' : 'work'
 
 export const listPrimaryEvents = async (): Promise<Event[]> => {
   const token = getFeishuToken()
@@ -141,21 +145,25 @@ export const listPrimaryEvents = async (): Promise<Event[]> => {
   const items: FeishuRawEvent[] = data?.data?.items ?? []
   return items
     .filter((it) => it.event_id && it.start_time?.timestamp && it.end_time?.timestamp)
-    .map((it) => ({
-      id: 'fs-' + it.event_id!,
-      feishuEventId: it.event_id!,
-      title: it.summary ?? '未命名',
-      startTime: tsToHHmm(it.start_time!.timestamp!),
-      endTime: tsToHHmm(it.end_time!.timestamp!),
-      type: inferType(it),
-      source: 'feishu' as const,
-    }))
+    .map((it) => {
+      const kind = inferKind(it)
+      return {
+        id: 'fs-' + it.event_id!,
+        feishuEventId: it.event_id!,
+        title: it.summary ?? '未命名',
+        startTime: tsToScheduleIso(it.start_time!.timestamp!),
+        endTime: tsToScheduleIso(it.end_time!.timestamp!),
+        type: kind,
+        isFixed: kind === 'meeting',
+        source: 'feishu' as const,
+      }
+    })
 }
 
 const eventToBody = (e: Event) => ({
   summary: e.title,
-  start_time: { timestamp: String(hhmmToTimestamp(e.startTime)) },
-  end_time: { timestamp: String(hhmmToTimestamp(e.endTime)) },
+  start_time: { timestamp: String(isoOrHmToUnix(e.startTime)) },
+  end_time: { timestamp: String(isoOrHmToUnix(e.endTime)) },
   description: '由 VitaSleep 创建',
 })
 
@@ -242,7 +250,8 @@ const eventEquivalent = (a: Event, b: Event): boolean =>
   a.title === b.title &&
   a.startTime === b.startTime &&
   a.endTime === b.endTime &&
-  a.type === b.type
+  a.type === b.type &&
+  a.isFixed === b.isFixed
 
 /** Diff local schedule vs the last-known remote snapshot. */
 export const diffEvents = (local: Event[], remote: Event[]): EventDiff => {

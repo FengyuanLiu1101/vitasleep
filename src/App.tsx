@@ -8,7 +8,7 @@ import SettingsPage from './pages/SettingsPage'
 import UserDrawer from './components/UserDrawer'
 import Toast from './components/Toast'
 import { useAppStore } from './store/useAppStore'
-import { exchangeCodeForToken } from './lib/feishuClient'
+import { getFeishuAccessToken } from './services/feishuCalendar'
 
 type ToastVariant = 'cyan' | 'green'
 
@@ -18,34 +18,41 @@ function FeishuCallbackHandler({
   onToast: (msg: string, variant?: ToastVariant) => void
 }) {
   const location = useLocation()
-  const setFeishuConnected = useAppStore((s) => s.setFeishuConnected)
+  const setFeishuAccessToken = useAppStore((s) => s.setFeishuAccessToken)
   const appendLog = useAppStore((s) => s.appendLog)
+  const setErrorMessage = useAppStore((s) => s.setErrorMessage)
 
   useEffect(() => {
     const params = new URLSearchParams(location.search)
     const code = params.get('code')
     if (!code) return
-    // Without a backend that mints app_access_token we can't fully exchange the
-    // code. Wired up to spec — replace `appAccessToken` with one provided by
-    // your server when integrating for real.
-    const appAccessToken = ''
-    exchangeCodeForToken(code, appAccessToken)
-      .then(() => {
-        setFeishuConnected(true)
-        appendLog({ level: 'DONE', message: '飞书授权成功' })
+
+    let cancelled = false
+    ;(async () => {
+      try {
+        const token = await getFeishuAccessToken(code)
+        if (cancelled) return
+        setFeishuAccessToken(token)
+        appendLog({ level: 'DONE', message: '飞书授权成功（token 已保存）' })
         onToast('已连接飞书', 'green')
-      })
-      .catch((e) => {
+      } catch (e) {
+        if (cancelled) return
+        const msg = e instanceof Error ? e.message : String(e)
+        setErrorMessage(msg)
         appendLog({
           level: 'ERROR',
-          message: '飞书授权失败：' + (e instanceof Error ? e.message : String(e)),
+          message: '飞书授权失败：' + msg,
         })
-        onToast('飞书授权失败（需要后端配合）')
-      })
-      .finally(() => {
-        window.history.replaceState({}, '', location.pathname)
-      })
-  }, [location, setFeishuConnected, appendLog, onToast])
+        onToast('飞书授权失败（演示模式下可使用 Mock token）')
+      } finally {
+        if (!cancelled) window.history.replaceState({}, '', location.pathname)
+      }
+    })()
+
+    return () => {
+      cancelled = true
+    }
+  }, [location, appendLog, onToast, setFeishuAccessToken, setErrorMessage])
 
   return null
 }

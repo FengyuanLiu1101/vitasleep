@@ -3,11 +3,7 @@ import { Apple, Copy, Link2, LogOut, User as UserIcon } from 'lucide-react'
 import Modal from './Modal'
 import Toggle from './Toggle'
 import { useAppStore } from '../store/useAppStore'
-import {
-  buildAuthorizeUrl,
-  getFeishuToken,
-  setFeishuToken,
-} from '../lib/feishuClient'
+import { buildAuthorizeUrl, getFeishuToken } from '../lib/feishuClient'
 
 interface Props {
   open: boolean
@@ -71,8 +67,8 @@ export default function UserDrawer({ open, onClose, onToast }: Props) {
   const userEmail = useAppStore((s) => s.userEmail)
   const feishuConnected = useAppStore((s) => s.feishuConnected)
   const setUserName = useAppStore((s) => s.setUserName)
-  const setUserEmail = useAppStore((s) => s.setUserEmail)
   const setFeishuConnected = useAppStore((s) => s.setFeishuConnected)
+  const disconnectFeishuStore = useAppStore((s) => s.disconnectFeishu)
   const setDemoMode = useAppStore((s) => s.setDemoMode)
   const appendLog = useAppStore((s) => s.appendLog)
 
@@ -133,9 +129,7 @@ export default function UserDrawer({ open, onClose, onToast }: Props) {
   }
 
   const handleDisconnectFeishu = () => {
-    setFeishuToken(null)
-    setFeishuConnected(false)
-    setUserEmail('')
+    disconnectFeishuStore()
     appendLog({ level: 'INFO', message: '已断开飞书连接' })
     onToast('已断开飞书连接', 'green')
   }
@@ -240,7 +234,7 @@ export default function UserDrawer({ open, onClose, onToast }: Props) {
                 onClick={handleConnectFeishu}
                 className="text-[12px] font-medium text-cyan-1 hover:opacity-80"
               >
-                连接飞书
+                连接飞书日历
               </button>
             )}
           </div>

@@ -15,10 +15,11 @@ export default function AppBar({
   onAvatarClick,
   onSettingsClick,
 }: AppBarProps) {
-  const energyLevel = useAppStore((s) => s.energyLevel)
+  const currentEnergyLevel = useAppStore((s) => s.currentEnergyLevel)
   const userName = useAppStore((s) => s.userName)
   const setUserDrawerOpen = useAppStore((s) => s.setUserDrawerOpen)
-  const isLow = energyLevel < 30
+  const rounded = Math.round(currentEnergyLevel)
+  const isLow = rounded < 30
   const barColor = isLow ? 'var(--color-yellow-1)' : 'var(--color-cyan-1)'
   const navigate = useNavigate()
 
@@ -64,14 +65,14 @@ export default function AppBar({
             <div className="text-[12px] text-text-2">
               身体电量{' '}
               <span style={{ color: barColor }} className="font-semibold">
-                {energyLevel}%
+                {rounded}%
               </span>
             </div>
             <div className="w-[140px] h-1.5 rounded-full bg-bg-2 overflow-hidden">
               <div
                 className="h-full rounded-full transition-all duration-300"
                 style={{
-                  width: `${energyLevel}%`,
+                  width: `${rounded}%`,
                   background: barColor,
                 }}
               />

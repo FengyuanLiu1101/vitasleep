@@ -11,7 +11,7 @@ import Typewriter from '../components/Typewriter'
 import { useAppStore, nowHHmm } from '../store/useAppStore'
 import type { DisplayItem, Event, Issue } from '../data/mockData'
 import { scenarioSchedules } from '../data/mockData'
-import callZhipu, { analyzeWithZhipu } from '../lib/zhipuClient'
+import callZhipu, { readZhipuApiKey } from '../lib/zhipuClient'
 import { isHealthySchedule } from '../lib/mockAnalysis'
 import {
   createEvent as fsCreateEvent,
@@ -22,6 +22,13 @@ import {
   getFeishuToken,
   listPrimaryEvents,
 } from '../lib/feishuClient'
+import {
+  generateScheduleSuggestions,
+  suggestionsToIssues,
+} from '../services/scheduleAdvisor'
+import { createCalendarEvent } from '../services/feishuCalendar'
+import { hhmmToIso, isoToHHmm } from '../utils/scheduleTime'
+import type { CreateEventPayload } from '../types/feishu'
 
 type ToastVariant = 'cyan' | 'green'
 
@@ -45,6 +52,20 @@ const hhmmToMin = (t: string) => {
 let manualIdSeq = 0
 const newManualId = () => `m-${Date.now()}-${manualIdSeq++}`
 
+const FEISHU_PRIMARY_CAL = 'primary'
+
+const eventToFeishuPayload = (
+  title: string,
+  startIso: string,
+  endIso: string,
+): CreateEventPayload => ({
+  summary: title,
+  start_time: { timestamp: String(Math.floor(Date.parse(startIso) / 1000)) },
+  end_time: { timestamp: String(Math.floor(Date.parse(endIso) / 1000)) },
+  description: '由 VitaSleep 插入',
+  app_metadata: { vitasleep_managed: true, block_type: 'rest' },
+})
+
 const buildSummaryPrompt = (
   acceptedSuggestions: Array<{
     event?: string
@@ -60,6 +81,7 @@ ${JSON.stringify(acceptedSuggestions)}
 
 export default function SchedulePage() {
   const scheduleEvents = useAppStore((s) => s.scheduleEvents)
+  const scheduleSuggestions = useAppStore((s) => s.scheduleSuggestions)
   const originalEvents = useAppStore((s) => s.originalEvents)
   const analysisResults = useAppStore((s) => s.analysisResults)
   const acceptedIds = useAppStore((s) => s.acceptedIds)
@@ -67,31 +89,38 @@ export default function SchedulePage() {
   const scheduleConfirmed = useAppStore((s) => s.scheduleConfirmed)
   const isAnalyzing = useAppStore((s) => s.isAnalyzing)
   const analysisError = useAppStore((s) => s.analysisError)
-  const energyLevel = useAppStore((s) => s.energyLevel)
+  const errorMessage = useAppStore((s) => s.errorMessage)
+  const currentEnergyLevel = useAppStore((s) => s.currentEnergyLevel)
   const demoMode = useAppStore((s) => s.demoMode)
-  const activeScenario = useAppStore((s) => s.activeScenario)
   const lastSyncTime = useAppStore((s) => s.lastSyncTime)
   const lastSyncSnapshot = useAppStore((s) => s.lastSyncSnapshot)
+  const feishuConnected = useAppStore((s) => s.feishuConnected)
+  const feishuAccessToken = useAppStore((s) => s.feishuAccessToken)
 
   const setScheduleEvents = useAppStore((s) => s.setScheduleEvents)
   const setOriginalEvents = useAppStore((s) => s.setOriginalEvents)
   const addEvent = useAppStore((s) => s.addEvent)
+  const applyAgentAcceptedEvent = useAppStore((s) => s.applyAgentAcceptedEvent)
   const updateEvent = useAppStore((s) => s.updateEvent)
   const deleteEvent = useAppStore((s) => s.deleteEvent)
   const setAnalysisResults = useAppStore((s) => s.setAnalysisResults)
+  const setScheduleSuggestions = useAppStore((s) => s.setScheduleSuggestions)
   const acceptIssue = useAppStore((s) => s.acceptIssue)
   const ignoreIssue = useAppStore((s) => s.ignoreIssue)
   const setScheduleConfirmed = useAppStore((s) => s.setScheduleConfirmed)
   const setIsAnalyzing = useAppStore((s) => s.setIsAnalyzing)
   const setAnalysisError = useAppStore((s) => s.setAnalysisError)
+  const setErrorMessage = useAppStore((s) => s.setErrorMessage)
   const setLastSyncTime = useAppStore((s) => s.setLastSyncTime)
   const setLastSyncSnapshot = useAppStore((s) => s.setLastSyncSnapshot)
+  const setLastSyncedAt = useAppStore((s) => s.setLastSyncedAt)
   const appendLog = useAppStore((s) => s.appendLog)
 
-  // Local UI state
   const [bannerVisible, setBannerVisible] = useState(false)
   const [bannerMsg, setBannerMsg] = useState('日程已同步至飞书日历')
-  const [toast, setToast] = useState<{ msg: string; variant: ToastVariant } | null>(null)
+  const [toast, setToast] = useState<{ msg: string; variant: ToastVariant } | null>(
+    null,
+  )
   const [editingId, setEditingId] = useState<string | null>(null)
   const [adding, setAdding] = useState(false)
   const [deleteTarget, setDeleteTarget] = useState<string | null>(null)
@@ -107,62 +136,57 @@ export default function SchedulePage() {
   const showToast = (msg: string, variant: ToastVariant = 'cyan') =>
     setToast({ msg, variant })
 
-  // Always re-run analysis when scheduleEvents reference changes. Uses the
-  // unified analyzeWithZhipu helper which already handles 15s timeout, JSON
-  // parsing, and falls back to scenario-specific mock fixtures on any failure.
   const analysisRunIdRef = useRef(0)
-  const runAnalysis = useCallback(
+  const runSuggestions = useCallback(
     async (events: Event[]) => {
       const runId = ++analysisRunIdRef.current
       setIsAnalyzing(true)
       setAnalysisError(null)
-      const result = await analyzeWithZhipu({
-        events,
-        energyLevel,
-        scenario: activeScenario,
-        demoMode,
-      })
-      if (analysisRunIdRef.current !== runId) return
-      setAnalysisResults(result.issues)
-      if (result.source === 'zhipu') {
+      setErrorMessage(null)
+      try {
+        const useAI = !demoMode && !!readZhipuApiKey()
+        const suggestions = await generateScheduleSuggestions(
+          events,
+          currentEnergyLevel,
+          useAI,
+        )
+        if (analysisRunIdRef.current !== runId) return
+        setScheduleSuggestions(suggestions)
+        setAnalysisResults(suggestionsToIssues(suggestions))
         appendLog({
           level: 'INFO',
-          message: `智谱分析完成：${result.issues.length} 处风险`,
+          message: `日程建议已更新：${suggestions.length} 条（${
+            useAI ? '规则 + 智谱' : '规则引擎'
+          }）`,
         })
-      } else if (result.source === 'mock-scenario') {
-        if (result.error) setAnalysisError(result.error)
-        appendLog({
-          level: result.error ? 'WARN' : 'INFO',
-          message: result.error
-            ? `智谱不可用，已加载场景 Mock 数据（${result.issues.length} 处）`
-            : `演示模式：加载场景 Mock 数据（${result.issues.length} 处）`,
-        })
-      } else {
-        if (result.error) setAnalysisError(result.error)
-        appendLog({
-          level: 'WARN',
-          message: `本地兜底分析（${result.issues.length} 处）`,
-        })
+      } catch (e) {
+        if (analysisRunIdRef.current !== runId) return
+        const msg = e instanceof Error ? e.message : String(e)
+        setAnalysisError(msg)
+        setErrorMessage(msg)
+        setScheduleSuggestions([])
+        setAnalysisResults([])
+        appendLog({ level: 'ERROR', message: '生成日程建议失败：' + msg })
+      } finally {
+        if (analysisRunIdRef.current === runId) setIsAnalyzing(false)
       }
-      setIsAnalyzing(false)
     },
     [
-      energyLevel,
-      activeScenario,
+      appendLog,
+      currentEnergyLevel,
       demoMode,
       setAnalysisError,
       setAnalysisResults,
+      setErrorMessage,
       setIsAnalyzing,
-      appendLog,
+      setScheduleSuggestions,
     ],
   )
 
-  // Re-analyze whenever the schedule changes (mount, edit, add, delete, scenario, pull).
   useEffect(() => {
-    runAnalysis(scheduleEvents)
-  }, [scheduleEvents, runAnalysis])
+    runSuggestions(scheduleEvents)
+  }, [scheduleEvents, runSuggestions])
 
-  // Build the visible timeline: events + accepted break inserts.
   const timeline = useMemo<
     Array<{
       item: DisplayItem
@@ -172,37 +196,18 @@ export default function SchedulePage() {
       inserted: boolean
     }>
   >(() => {
-    const list: Array<{
-      item: DisplayItem
-      issue?: Issue
-      accepted: boolean
-      ignored: boolean
-      inserted: boolean
-    }> = []
-    for (const ev of scheduleEvents) {
+    return scheduleEvents.map((ev) => {
       const issue = analysisResults.find((i) => i.eventId === ev.id)
-      const accepted = acceptedIds.includes(ev.id)
-      const ignored = ignoredEventIds.includes(ev.id)
-      list.push({ item: ev, issue, accepted, ignored, inserted: false })
-      if (issue?.insertBreakAfter && accepted) {
-        const startMin = hhmmToMin(ev.endTime)
-        const breakDur = issue.breakDuration ?? 30
-        list.push({
-          item: {
-            id: `break-${ev.id}`,
-            type: 'rest',
-            title: `恢复休息 ${breakDur} 分钟`,
-            startTime: minutesToHHmm(startMin),
-            endTime: minutesToHHmm(startMin + breakDur),
-            subtitle: '代谢恢复窗口',
-          },
-          accepted: true,
-          ignored: false,
-          inserted: true,
-        })
+      const accepted = !!(issue && acceptedIds.includes(ev.id))
+      const ignored = !!(issue && ignoredEventIds.includes(ev.id))
+      return {
+        item: ev,
+        issue,
+        accepted,
+        ignored,
+        inserted: false,
       }
-    }
-    return list
+    })
   }, [scheduleEvents, analysisResults, acceptedIds, ignoredEventIds])
 
   const acceptedSuggestions = useMemo(
@@ -213,7 +218,7 @@ export default function SchedulePage() {
           const ev = scheduleEvents.find((e) => e.id === i.eventId)
           return {
             event: ev?.title ?? i.eventId,
-            time: ev?.startTime,
+            time: ev ? isoToHHmm(ev.startTime) : undefined,
             suggestion: i.suggestion,
             breakDuration: i.breakDuration,
           }
@@ -221,25 +226,85 @@ export default function SchedulePage() {
     [analysisResults, acceptedIds, scheduleEvents],
   )
 
-  const handleAccept = (issue: Issue) => {
+  const handleAccept = async (issue: Issue) => {
     acceptIssue(issue.eventId)
     appendLog({ level: 'DONE', message: `已接受建议：${issue.suggestion}` })
+
+    const sug = scheduleSuggestions.find((x) => x.id === issue.suggestionId)
+
+    if (sug?.type === 'insert_rest' && sug.newEvent) {
+      const acceptedAt = new Date().toISOString()
+      const ev: Event = {
+        id: newManualId(),
+        title: sug.newEvent.title,
+        startTime: sug.newEvent.startTime,
+        endTime: sug.newEvent.endTime,
+        type: 'rest',
+        isFixed: false,
+        source: 'agent_accepted',
+        acceptedAt,
+      }
+      applyAgentAcceptedEvent(ev)
+
+      if (feishuConnected && feishuAccessToken) {
+        try {
+          const payload = eventToFeishuPayload(
+            ev.title,
+            ev.startTime,
+            ev.endTime,
+          )
+          const created = await createCalendarEvent(
+            feishuAccessToken,
+            FEISHU_PRIMARY_CAL,
+            payload,
+          )
+          updateEvent(ev.id, { feishuEventId: created.event_id })
+          setLastSyncedAt(new Date().toISOString())
+          showToast('建议已采纳，日程已更新', 'green')
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e)
+          setErrorMessage(msg)
+          showToast('已在本地保存，连接飞书后可同步', 'cyan')
+        }
+      } else {
+        showToast('已在本地保存，连接飞书后可同步', 'cyan')
+      }
+      return
+    }
+
+    showToast('建议已采纳，日程已更新', 'green')
   }
+
   const handleIgnore = (issue: Issue) => {
     ignoreIssue(issue.eventId)
     appendLog({ level: 'WARN', message: `已忽略建议：${issue.eventId}` })
   }
 
   const handleSaveEdit = (id: string, draft: EventDraft) => {
-    updateEvent(id, draft)
+    updateEvent(id, {
+      title: draft.title,
+      startTime: hhmmToIso(draft.startTime),
+      endTime: hhmmToIso(draft.endTime),
+      type: draft.type,
+      isFixed: draft.type === 'fixed' || draft.type === 'meeting',
+    })
     setEditingId(null)
     appendLog({
       level: 'INFO',
       message: `已修改事件：${draft.title} (${draft.startTime}-${draft.endTime})`,
     })
   }
+
   const handleAddSubmit = (draft: EventDraft) => {
-    const ev: Event = { id: newManualId(), source: 'manual', ...draft }
+    const ev: Event = {
+      id: newManualId(),
+      title: draft.title,
+      startTime: hhmmToIso(draft.startTime),
+      endTime: hhmmToIso(draft.endTime),
+      type: draft.type,
+      isFixed: draft.type === 'fixed' || draft.type === 'meeting',
+      source: 'manual',
+    }
     addEvent(ev)
     setAdding(false)
     appendLog({
@@ -247,6 +312,7 @@ export default function SchedulePage() {
       message: `已新增事件：${draft.title} (${draft.startTime}-${draft.endTime})`,
     })
   }
+
   const handleDeleteConfirm = () => {
     if (!deleteTarget) return
     const target = scheduleEvents.find((e) => e.id === deleteTarget)
@@ -261,23 +327,23 @@ export default function SchedulePage() {
 
   const defaultNewDraft = useMemo<EventDraft>(() => {
     if (scheduleEvents.length === 0)
-      return { title: '', startTime: '09:00', endTime: '10:00', type: 'flexible' }
+      return { title: '', startTime: '09:00', endTime: '10:00', type: 'work' }
     const last = scheduleEvents[scheduleEvents.length - 1]
-    const start = hhmmToMin(last.endTime) + 30
+    const start = hhmmToMin(isoToHHmm(last.endTime)) + 30
     return {
       title: '',
       startTime: minutesToHHmm(start),
       endTime: minutesToHHmm(start + 60),
-      type: 'flexible',
+      type: 'work',
     }
   }, [scheduleEvents])
 
   const handlePull = async () => {
     setPulling(true)
+    setErrorMessage(null)
     try {
       if (demoMode || !getFeishuToken()) {
         await new Promise((r) => setTimeout(r, 1000))
-        // In demo mode just reload the current scenario or initial dataset.
         const scenarioId = useAppStore.getState().activeScenario
         const next = scenarioId
           ? scenarioSchedules[scenarioId]
@@ -300,6 +366,7 @@ export default function SchedulePage() {
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
+      setErrorMessage(msg)
       showToast('拉取失败：' + msg.slice(0, 40))
       appendLog({ level: 'ERROR', message: '飞书拉取失败：' + msg })
     } finally {
@@ -309,7 +376,7 @@ export default function SchedulePage() {
 
   const handlePush = async () => {
     setPushing(true)
-    // Capture the pre-push state so we can offer "撤销上次同步" afterward.
+    setErrorMessage(null)
     const eventsBefore = scheduleEvents.map((e) => ({ ...e }))
     const originalBefore = originalEvents.map((e) => ({ ...e }))
     try {
@@ -366,6 +433,7 @@ export default function SchedulePage() {
       }
     } catch (e) {
       const msg = e instanceof Error ? e.message : String(e)
+      setErrorMessage(msg)
       showToast('推送失败：' + msg.slice(0, 40))
       appendLog({ level: 'ERROR', message: '飞书推送失败：' + msg })
     } finally {
@@ -379,9 +447,6 @@ export default function SchedulePage() {
     setUndoing(true)
     try {
       if (!lastSyncSnapshot.demo) {
-        // Best-effort: delete every event we created during the last push.
-        // patch/delete operations from that push are *not* reversed because
-        // we don't keep their pre-state on the server side.
         for (let i = 0; i < lastSyncSnapshot.createdFeishuIds.length; i++) {
           const fid = lastSyncSnapshot.createdFeishuIds[i]
           const localId = lastSyncSnapshot.createdLocalIds[i]
@@ -440,42 +505,24 @@ export default function SchedulePage() {
 
   const handleConfirmWrite = async () => {
     setScheduleConfirmed(true)
-    if (!demoMode && getFeishuToken()) {
-      try {
-        for (const row of timeline) {
-          if (!row.inserted) continue
-          const item = row.item
-          if (item.type !== 'rest') continue
-          const ev: Event = {
-            id: item.id,
-            title: item.title,
-            startTime: item.startTime,
-            endTime: item.endTime,
-            type: 'flexible',
-            source: 'manual',
-          }
-          await fsCreateEvent(ev)
-        }
-        appendLog({ level: 'DONE', message: '已写入飞书日历' })
-        setBannerMsg('已同步至飞书日历')
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e)
-        appendLog({ level: 'ERROR', message: '飞书写入失败：' + msg })
-        setBannerMsg('飞书写入失败（详见日志）')
-      }
-    } else {
-      appendLog({ level: 'DONE', message: '日程已同步（演示模式）' })
-      setBannerMsg('日程已同步至飞书日历')
-    }
+    appendLog({ level: 'DONE', message: '用户确认日程摘要' })
     setSummary((s) => ({ ...s, open: false }))
+    setBannerMsg('日程已更新')
     setBannerVisible(true)
   }
+
+  const roundedEnergy = Math.round(currentEnergyLevel)
 
   return (
     <div className="pb-32">
       <AppBar title="日程优化" showEnergy />
 
       <div className="px-4 space-y-4">
+        {(errorMessage || analysisError) && !isAnalyzing && (
+          <p className="text-[11px] text-yellow-1 px-0.5">
+            {errorMessage ?? analysisError}
+          </p>
+        )}
         <SyncBar
           lastSyncTime={lastSyncTime}
           pulling={pulling}
@@ -491,7 +538,7 @@ export default function SchedulePage() {
             <div className="flex items-center gap-2">
               <h2 className="text-[14px] text-text-2 font-medium">今日日程</h2>
               {analysisError && !isAnalyzing && (
-                <span className="text-[11px] text-yellow-1">本地模拟</span>
+                <span className="text-[11px] text-yellow-1">分析提示</span>
               )}
               {isAnalyzing && (
                 <span className="text-[11px] text-cyan-1">分析中…</span>
@@ -533,7 +580,7 @@ export default function SchedulePage() {
                   inserted={row.inserted}
                   analyzing={isAnalyzing}
                   onAccept={
-                    row.issue ? () => handleAccept(row.issue!) : undefined
+                    row.issue ? () => void handleAccept(row.issue!) : undefined
                   }
                   onIgnore={
                     row.issue ? () => handleIgnore(row.issue!) : undefined
@@ -574,7 +621,7 @@ export default function SchedulePage() {
 
         {analysisResults.length === 0 &&
         !isAnalyzing &&
-        isHealthySchedule(scheduleEvents, energyLevel) ? (
+        isHealthySchedule(scheduleEvents, roundedEnergy) ? (
           <div
             className="rounded-2xl p-4 flex gap-3 animate-fade-up border"
             style={{
@@ -709,7 +756,7 @@ export default function SchedulePage() {
           <button
             type="button"
             disabled={summary.loading}
-            onClick={handleConfirmWrite}
+            onClick={() => void handleConfirmWrite()}
             className="w-full h-11 rounded-xl bg-cyan-1 text-bg-0 font-semibold text-[14px] disabled:opacity-50"
           >
             确认写入日历

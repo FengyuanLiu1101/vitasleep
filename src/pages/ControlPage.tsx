@@ -16,13 +16,13 @@ const STRESS_DISPLAY: Record<StressLevel, string> = {
 }
 
 export default function ControlPage() {
-  const energyLevel = useAppStore((s) => s.energyLevel)
+  const currentEnergyLevel = useAppStore((s) => s.currentEnergyLevel)
   const heartRate = useAppStore((s) => s.heartRate)
   const stressLevel = useAppStore((s) => s.stressLevel)
   const activeScenario = useAppStore((s) => s.activeScenario)
   const logs = useAppStore((s) => s.logs)
 
-  const setEnergyLevel = useAppStore((s) => s.setEnergyLevel)
+  const setCurrentEnergyLevel = useAppStore((s) => s.setCurrentEnergyLevel)
   const setHeartRate = useAppStore((s) => s.setHeartRate)
   const setStressLevel = useAppStore((s) => s.setStressLevel)
   const setActiveScenario = useAppStore((s) => s.setActiveScenario)
@@ -39,21 +39,19 @@ export default function ControlPage() {
     setActiveScenario(id)
 
     if (id === 1) {
-      setEnergyLevel(75)
+      setCurrentEnergyLevel(25)
       setHeartRate(72)
       setStressLevel('low')
     } else if (id === 2) {
-      setEnergyLevel(15)
+      setCurrentEnergyLevel(12)
       setHeartRate(88)
       setStressLevel('high')
     } else if (id === 3) {
+      setCurrentEnergyLevel(28)
       setStressLevel('mid')
       setHeartRate(76)
     }
 
-    // Hard-reset the schedule subtree so a previous scenario's analysis
-    // results, accept/ignore decisions, banner state, etc. never leak into
-    // the new scenario. SchedulePage's effect then re-runs analysis.
     resetScheduleForScenario(scenarioSchedules[id].map((e) => ({ ...e })))
 
     appendLogs(scenarioLogs[id].map((l) => ({ ...l, animate: true })))
@@ -84,11 +82,11 @@ export default function ControlPage() {
           <div className="space-y-5">
             <SliderControl
               label="身体电量"
-              value={energyLevel}
+              value={currentEnergyLevel}
               min={0}
               max={100}
-              displayValue={`${energyLevel}%`}
-              onChange={(v) => setEnergyLevel(v)}
+              displayValue={`${Math.round(currentEnergyLevel)}%`}
+              onChange={(v) => setCurrentEnergyLevel(v)}
             />
             <SliderControl
               label="心率（BPM）"
