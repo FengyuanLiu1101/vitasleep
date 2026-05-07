@@ -53,3 +53,4 @@ VITE_ZHIPU_API_KEY=你的智谱APIKey
 
 当前为 MVP 演示版本，核心功能基于规则引擎实现。
 后续规划：真实生物特征模型接入 · React Native 移动端 · iOS EventKit 日历集成
+（需要打包成sevicr放入后段 预计5月完成
